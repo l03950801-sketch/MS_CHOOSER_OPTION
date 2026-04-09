@@ -92,5 +92,5 @@ if __name__ == "__main__":
     save_cleaned_data(cleaned_dataset)
     
     print("\n" + "="*60)
-    print("Week2 Data Cleaning Pipeline Completed Successfully")
+    print("Data Cleaning Pipeline Completed Successfully")
     print("="*60)
