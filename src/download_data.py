@@ -82,7 +82,7 @@ def download_sentiment_data():
             all_articles.extend(articles)
             print(f"✅ {current.strftime('%Y-%m')} | numbers of news obtained: {len(articles)}")
         except Exception as e:
-            print(f"❌ {current.strftime('%Y-%m')} request fails: {str(e)}")
+            print(f"NO! {current.strftime('%Y-%m')} request fails: {str(e)}")
 
 
         time.sleep(12)
