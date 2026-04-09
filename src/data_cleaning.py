@@ -3,7 +3,7 @@ import numpy as np
 from pathlib import Path
 import pandas_market_calendars as mcal
 
-# Path Config
+# Path Configuration
 RAW_DATA_PATH = Path("data/raw_data.csv")
 CLEANED_DATA_PATH = Path("data/processed_data.csv")
 
@@ -51,19 +51,21 @@ def handle_outliers(df: pd.DataFrame) -> pd.DataFrame:
         )
     return df_clean
 
-def calculate_daily_returns(df: pd.DataFrame) -> pd.DataFrame:
-    """Calculate log returns from price data (standard in quant finance)"""
+def transform_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Transform raw features for option pricing model (BS-compliant)"""
     df_transformed = df.copy()
-    # Log return (preferred for time-series analysis)
-    df_transformed["return"] = np.log(df_transformed["jpm_close"]).diff()
-    # Rename columns to target format
+    # Rename price to S (required for Black-Scholes)
+    df_transformed.rename(columns={"jpm_close": "S"}, inplace=True)
+    # Calculate log returns
+    df_transformed["return"] = np.log(df_transformed["S"]).diff()
+    # Rename risk-free rate & volatility
     df_transformed.rename(columns={"vix": "vol", "treasury_rate": "r"}, inplace=True)
-    # Drop original price column
-    df_transformed = df_transformed[["return", "vol", "r", "sentiment"]]
+    # Final column order for modeling
+    df_transformed = df_transformed[["S", "return", "vol", "r", "sentiment"]]
     return df_transformed
 
 def data_quality_check(df: pd.DataFrame) -> None:
-    print("\n Final Data Quality Check")
+    print("\n Data Quality Check Completed")
     print(f"Total rows: {len(df)}")
     print(f"Missing values: {df.isnull().sum().sum()}")
     print(f"Columns: {list(df.columns)}")
@@ -78,7 +80,7 @@ def clean_data_pipeline() -> pd.DataFrame:
     df_aligned = align_time_series(df_raw)
     df_no_missing = handle_missing_values(df_aligned)
     df_clean = handle_outliers(df_no_missing)
-    df_final = calculate_daily_returns(df_clean)
+    df_final = transform_features(df_clean)
     
     data_quality_check(df_final)
     return df_final
@@ -92,5 +94,5 @@ if __name__ == "__main__":
     save_cleaned_data(cleaned_dataset)
     
     print("\n" + "="*60)
-    print("Data Cleaning Pipeline Completed Successfully")
+    print("Week2 Data Cleaning Pipeline Completed Successfully")
     print("="*60)
