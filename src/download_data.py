@@ -9,13 +9,9 @@ import time
 # configuration
 START_DATE = "2018-01-01"
 END_DATE = "2019-12-31"
-
 FRED_API_KEY = "926c9e047076f239237763f6a03961da"
 AV_API_KEY = "RXP2APE979NRUVVT"
-
 OUTPUT_PATH = Path("data/raw_data.csv")
-
-
 
 # Download financial data
 def download_stock_data():
