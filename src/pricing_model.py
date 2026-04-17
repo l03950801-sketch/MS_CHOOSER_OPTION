@@ -9,8 +9,6 @@ RISK_FREE_ADJUST = 100
 VOL_ADJUST = 100
 TRADING_DAYS = 252
 ROLLING_WINDOW = 20
-
-# Option Parameters
 STRIKE = 110
 T_MATURITY = 1/12
 T_CHOOSER = 1/24
@@ -62,11 +60,11 @@ def run_comparison_analysis(df: pd.DataFrame) -> None:
     print("="*60)
     
     benchmark = np.array([
-        black_scholes(row["S"], STRIKE, T_MATURITY, row["r"], row["vol"], "call")
+        black_scholes(row["S"], STRIKE, T_MATURITY, row["r"], row["rolling_vol"], "call")
         for _, row in df.iterrows()
     ])
     
-    pred_traditional = np.array([
+    pred_vix = np.array([
         black_scholes(row["S"], STRIKE, T_MATURITY, row["r"], row["vol"], "call")
         for _, row in df.iterrows()
     ])
@@ -75,19 +73,12 @@ def run_comparison_analysis(df: pd.DataFrame) -> None:
         black_scholes(row["S"], STRIKE, T_MATURITY, row["r"], adjust_volatility(row["vol"], row["sentiment"]), "call")
         for _, row in df.iterrows()
     ])
-    
-    pred_rolling_vol = np.array([
-        black_scholes(row["S"], STRIKE, T_MATURITY, row["r"], row["rolling_vol"], "call")
-        for _, row in df.iterrows()
-    ])
-    
-    metrics_traditional = calculate_metrics(benchmark, pred_traditional)
+
+    metrics_vix = calculate_metrics(benchmark, pred_vix)
     metrics_sentiment = calculate_metrics(benchmark, pred_sentiment)
-    metrics_rolling = calculate_metrics(benchmark, pred_rolling_vol)
     
-    print(f"Benchmark BS Model          | MAE: {metrics_traditional['MAE']} | RMSE: {metrics_traditional['RMSE']}")
-    print(f"BS + Sentiment Factor       | MAE: {metrics_sentiment['MAE']} | RMSE: {metrics_sentiment['RMSE']}")
-    print(f"BS + Rolling Volatility     | MAE: {metrics_rolling['MAE']} | RMSE: {metrics_rolling['RMSE']}")
+    print(f"BS Model (VIX Volatility)   | MAE: {metrics_vix['MAE']} | RMSE: {metrics_vix['RMSE']}")
+    print(f"BS Model (Sentiment Adjust) | MAE: {metrics_sentiment['MAE']} | RMSE: {metrics_sentiment['RMSE']}")
     print("\nComparison Analysis Completed")
 
 if __name__ == "__main__":
