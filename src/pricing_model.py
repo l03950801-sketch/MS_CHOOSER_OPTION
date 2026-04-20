@@ -13,7 +13,11 @@ STRIKE = 110
 T_MATURITY = 1/12
 T_CHOOSER = 1/24
 
+# WEEK 3: PRICING ERROR COMPARISON ANALYSIS
+
+# BS Model Calculation (Benchmark)
 def black_scholes(S: float, K: float, T: float, r: float, sigma: float, option_type: str = "call") -> float:
+    
     if sigma <= 0 or T <= 0:
         return np.nan
     
@@ -26,15 +30,18 @@ def black_scholes(S: float, K: float, T: float, r: float, sigma: float, option_t
         return K * np.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1)
     raise ValueError("Option type must be 'call' or 'put'")
 
+# BS Model Validation 
 def validate_bs_model() -> None:
     test_price = black_scholes(S=100, K=100, T=1, r=0.05, sigma=0.2, option_type="call")
     print(f"BS Model Validation | Test Call Price: {round(test_price, 4)}")
 
+# Chooser Option Pricing (Formula: CALL+PUT)
 def chooser_option_fixed(S: float, K: float, T_choose: float, T_maturity: float, r: float, sigma: float) -> float:
     call = black_scholes(S, K, T_maturity, r, sigma, "call")
     put = black_scholes(S, K, T_maturity, r, sigma, "put")
     return call + put
 
+# Processed Data Conversion
 def load_processed_data() -> pd.DataFrame:
     df = pd.read_csv(PROCESSED_DATA_PATH)
     df["date"] = pd.to_datetime(df["date"])
@@ -42,33 +49,37 @@ def load_processed_data() -> pd.DataFrame:
     
     df["r"] = df["r"] / RISK_FREE_ADJUST
     df["vol"] = df["vol"] / VOL_ADJUST
+    # Actual Annualized Volatility
     df["rolling_vol"] = df["return"].rolling(ROLLING_WINDOW).std() * np.sqrt(TRADING_DAYS)
     
     return df.dropna()
 
+# Linear Correction Integrating Sentiment Scores
 def adjust_volatility(sigma: float, sentiment: float) -> float:
     return sigma * (1 + sentiment * 0.1)
 
+# Evaluation of Linear Correction Model (Sentiment Data)
 def calculate_metrics(actual: np.ndarray, predicted: np.ndarray) -> dict:
     mae = np.mean(np.abs(actual - predicted))
     rmse = np.sqrt(np.mean((actual - predicted) ** 2))
     return {"MAE": float(round(mae, 4)), "RMSE": float(round(rmse, 4))}
 
+# Output
 def run_comparison_analysis(df: pd.DataFrame) -> None:
-    print("\n" + "="*60)
     print("WEEK 3: PRICING ERROR COMPARISON ANALYSIS")
-    print("="*60)
     
     benchmark = np.array([
         black_scholes(row["S"], STRIKE, T_MATURITY, row["r"], row["rolling_vol"], "call")
         for _, row in df.iterrows()
     ])
     
+    # VIX Volatility (Modelled Volatility)
     pred_vix = np.array([
         black_scholes(row["S"], STRIKE, T_MATURITY, row["r"], row["vol"], "call")
         for _, row in df.iterrows()
     ])
     
+    # Sentiment Adjust 
     pred_sentiment = np.array([
         black_scholes(row["S"], STRIKE, T_MATURITY, row["r"], adjust_volatility(row["vol"], row["sentiment"]), "call")
         for _, row in df.iterrows()
@@ -86,8 +97,7 @@ def run_comparison_analysis(df: pd.DataFrame) -> None:
 def run_week4_limitation_validation(df: pd.DataFrame, benchmark, pred_vix, pred_sentiment):
     print("WEEK 4: LIMITATION VALIDATION RESULTS")
 
-
-# 1. high-vol failure mode)
+# 1. high-vol failure mode
     vol_median = df['rolling_vol'].median()
     high_vol_mask = df['rolling_vol'] >= vol_median
     low_vol_mask  = df['rolling_vol'] < vol_median
@@ -102,7 +112,6 @@ def run_week4_limitation_validation(df: pd.DataFrame, benchmark, pred_vix, pred_
     print(f"  BSM + Sentiment:  {calculate_metrics(benchmark[low_vol_mask], pred_sentiment[low_vol_mask])}")
 
 # 2.sentiment impact gaps
-
     pos_sent_mask = df['sentiment'] >= 0
     neg_sent_mask = df['sentiment'] < 0
 
