@@ -52,7 +52,7 @@ def adjust_volatility(sigma: float, sentiment: float) -> float:
 def calculate_metrics(actual: np.ndarray, predicted: np.ndarray) -> dict:
     mae = np.mean(np.abs(actual - predicted))
     rmse = np.sqrt(np.mean((actual - predicted) ** 2))
-    return {"MAE": round(mae, 4), "RMSE": round(rmse, 4)}
+    return {"MAE": float(round(mae, 4)), "RMSE": float(round(rmse, 4))}
 
 def run_comparison_analysis(df: pd.DataFrame) -> None:
     print("\n" + "="*60)
@@ -81,6 +81,43 @@ def run_comparison_analysis(df: pd.DataFrame) -> None:
     print(f"BS Model (Sentiment Adjust) | MAE: {metrics_sentiment['MAE']} | RMSE: {metrics_sentiment['RMSE']}")
     print("\nComparison Analysis Completed")
 
+# WEEK 4: Limitation Validation
+
+def run_week4_limitation_validation(df: pd.DataFrame, benchmark, pred_vix, pred_sentiment):
+    print("WEEK 4: LIMITATION VALIDATION RESULTS")
+
+
+# 1. high-vol failure mode)
+    vol_median = df['rolling_vol'].median()
+    high_vol_mask = df['rolling_vol'] >= vol_median
+    low_vol_mask  = df['rolling_vol'] < vol_median
+
+    print("【1】High vs Low Volatility Regimes (MAE / RMSE)")
+    print("High Volatility Periods:")
+    print(f"  BSM (VIX):        {calculate_metrics(benchmark[high_vol_mask], pred_vix[high_vol_mask])}")
+    print(f"  BSM + Sentiment:  {calculate_metrics(benchmark[high_vol_mask], pred_sentiment[high_vol_mask])}")
+    
+    print("\nLow Volatility Periods:")
+    print(f"  BSM (VIX):        {calculate_metrics(benchmark[low_vol_mask], pred_vix[low_vol_mask])}")
+    print(f"  BSM + Sentiment:  {calculate_metrics(benchmark[low_vol_mask], pred_sentiment[low_vol_mask])}")
+
+# 2.sentiment impact gaps
+
+    pos_sent_mask = df['sentiment'] >= 0
+    neg_sent_mask = df['sentiment'] < 0
+
+    print("\n--------------------------------------------------")
+    print("【2】Positive vs Negative Sentiment (MAE / RMSE)")
+    print("Positive Sentiment:")
+    print(f"  BSM (VIX):        {calculate_metrics(benchmark[pos_sent_mask], pred_vix[pos_sent_mask])}")
+    print(f"  BSM + Sentiment:  {calculate_metrics(benchmark[pos_sent_mask], pred_sentiment[pos_sent_mask])}")
+    
+    print("\nNegative Sentiment:")
+    print(f"  BSM (VIX):        {calculate_metrics(benchmark[neg_sent_mask], pred_vix[neg_sent_mask])}")
+    print(f"  BSM + Sentiment:  {calculate_metrics(benchmark[neg_sent_mask], pred_sentiment[neg_sent_mask])}")
+
+    print("\n✅ Limitation validation completed.")
+
 if __name__ == "__main__":
     validate_bs_model()
     
@@ -91,3 +128,18 @@ if __name__ == "__main__":
     print(f"Fixed-Date Chooser Option Price: {round(sample_price, 4)}")
     
     run_comparison_analysis(df)
+
+    benchmark = np.array([
+        black_scholes(row["S"], STRIKE, T_MATURITY, row["r"], row["rolling_vol"], "call")
+        for _, row in df.iterrows()
+    ])
+    pred_vix = np.array([
+        black_scholes(row["S"], STRIKE, T_MATURITY, row["r"], row["vol"], "call")
+        for _, row in df.iterrows()
+    ])
+    pred_sentiment = np.array([
+        black_scholes(row["S"], STRIKE, T_MATURITY, row["r"], adjust_volatility(row["vol"], row["sentiment"]), "call")
+        for _, row in df.iterrows()
+    ])
+
+    run_week4_limitation_validation(df, benchmark, pred_vix, pred_sentiment)
