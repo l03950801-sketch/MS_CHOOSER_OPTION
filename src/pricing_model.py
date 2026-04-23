@@ -93,11 +93,10 @@ def run_comparison_analysis(df: pd.DataFrame) -> None:
     print("\nComparison Analysis Completed")
 
 # WEEK 4: Limitation Validation
-
 def run_week4_limitation_validation(df: pd.DataFrame, benchmark, pred_vix, pred_sentiment):
     print("WEEK 4: LIMITATION VALIDATION RESULTS")
 
-# 1. high-vol failure mode
+# 1. High Volatility Failure Mode
     vol_median = df['rolling_vol'].median()
     high_vol_mask = df['rolling_vol'] >= vol_median
     low_vol_mask  = df['rolling_vol'] < vol_median
