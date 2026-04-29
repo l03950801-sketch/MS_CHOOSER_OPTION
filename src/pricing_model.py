@@ -124,7 +124,7 @@ def run_week4_limitation_validation(df: pd.DataFrame, benchmark, pred_vix, pred_
     print(f"  BSM (VIX):        {calculate_metrics(benchmark[neg_sent_mask], pred_vix[neg_sent_mask])}")
     print(f"  BSM + Sentiment:  {calculate_metrics(benchmark[neg_sent_mask], pred_sentiment[neg_sent_mask])}")
 
-    print("\n✅ Limitation validation completed.")
+    print("\n Limitation validation completed.")
 
 if __name__ == "__main__":
     validate_bs_model()
