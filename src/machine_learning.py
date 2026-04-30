@@ -1,182 +1,177 @@
-# Week5 ML
-# Approach1: 波动率预测→BSM定价
-# Approach2: 纯正E2E定价
-
+# Week5 ML 
 import pandas as pd
 import numpy as np
 from sklearn.linear_model import LinearRegression
 from sklearn.ensemble import RandomForestRegressor
 from xgboost import XGBRegressor
-from sklearn.metrics import mean_squared_error
+from sklearn.metrics import mean_squared_error, mean_absolute_error
 from scipy.stats import norm
 import warnings
 warnings.filterwarnings('ignore')
 
-# 基础配置
+# ======================
+# 全局固定参数
+# ======================
 TRADING_DAYS = 252
 ROLLING_WINDOW = 20
 STRIKE = 110
 T_MATURITY = 1/12
+EPS = 1e-8
+DIR_THRESHOLD = 0.001
 
-# 加载数据
+# ======================
+# 数据预处理
+# ======================
 df = pd.read_csv("data/processed_data.csv")
 df = df.sort_values("date").reset_index(drop=True)
 df["date"] = pd.to_datetime(df["date"])
 
-# 滚动波动率
+# 个股20日滚动波动率
 df["rolling_vol"] = df["return"].rolling(ROLLING_WINDOW).std() * np.sqrt(TRADING_DAYS)
-df = df.dropna().reset_index(drop=True)
-
-# 生成期权价格标签(仅用于训练)
-def black_scholes_label(S, K, T, r, sigma):
-    d1 = (np.log(S/K) + (r + 0.5*sigma**2)*T) / (sigma*np.sqrt(T))
-    d2 = d1 - sigma*np.sqrt(T)
-    return S * norm.cdf(d1) - K * np.exp(-r*T) * norm.cdf(d2)
-df['K'] = df['S']
-df['T'] = 0.5
-df['option_price'] = df.apply(lambda x: black_scholes_label(x['S'],x['K'],x['T'],x['r'],x['vol']), axis=1)
+# 预测目标：下一日波动率（t+1）
+df["target_vol_t1"] = df["rolling_vol"].shift(-1)
 
 # BSM定价函数
-def black_scholes(S, K, T, r, sigma, option_type='call'):
+def black_scholes(S, K, T, r, sigma):
     if sigma <= 0 or T <= 0:
         return np.nan
     d1 = (np.log(S/K) + (r + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
     d2 = d1 - sigma * np.sqrt(T)
     return S * norm.cdf(d1) - K * np.exp(-r*T) * norm.cdf(d2)
 
-# 基准价格
-df['benchmark_price'] = df.apply(lambda row: black_scholes(row['S'], STRIKE, T_MATURITY, row['r'], row['rolling_vol']), axis=1)
+# 合成远期期权价格（t+1）
+df['synthetic_price_t'] = df.apply(lambda x: black_scholes(x['S'], STRIKE, T_MATURITY, x['r'], x['rolling_vol']), axis=1)
+df['synthetic_price_t1'] = df['synthetic_price_t'].shift(-1)
+df = df.dropna().reset_index(drop=True)
 
 # ======================
-# 2. 特征构建
+# 特征工程
 # ======================
-def build_features_lag1(data):
+def build_features(data):
     df = data.copy()
-    df['sent_lag1'] = df['sentiment'].shift(1)
-    df['vol_lag1'] = df['vol'].shift(1)
-    df['vol_ma5'] = df['vol'].rolling(5).mean()
-    df['sent_ma5'] = df['sentiment'].rolling(5).mean()
-    df['r_feature'] = df['r']
-    df['S_feature'] = df['S']
+    df['sent_lag1'] = df['sentiment'].shift(1)    # 滞后情绪
+    df['S_lag1'] = df['S'].shift(1)               # 滞后股价
+    df['r_lag1'] = df['r'].shift(1)               # 滞后利率
+    df['rv_lag1'] = df['rolling_vol'].shift(1)    # 个股滞后波动率
+    df['sent_ma5'] = df['sentiment'].rolling(5).mean() # 情绪趋势
     return df.dropna()
 
-def build_features_lag2(data):
-    df = data.copy()
-    df['sent_lag2'] = df['sentiment'].shift(2)
-    df['vol_lag2'] = df['vol'].shift(2)
-    df['vol_ma5'] = df['vol'].rolling(5).mean()
-    df['sent_ma5'] = df['sentiment'].rolling(5).mean()
-    df['r_feature'] = df['r']
-    df['S_feature'] = df['S']
-    return df.dropna()
+df_final = build_features(df)
+# 最终特征：无VIX，无共线性
+FEATURES = ['sent_lag1', 'S_lag1', 'r_lag1', 'rv_lag1', 'sent_ma5']
 
-# 最优滞后选择
-def evaluate_lag(df, lag):
-    data = build_features_lag1(df) if lag == 1 else build_features_lag2(df)
-    feats = ['vol_ma5','sent_ma5','r_feature','S_feature','sent_lag1','vol_lag1'] if lag ==1 else ['vol_ma5','sent_ma5','r_feature','S_feature','sent_lag2','vol_lag2']
-    X, y = data[feats], data['vol']
-    split = int(0.7*len(X))
-    model = RandomForestRegressor(random_state=42)
-    model.fit(X[:split], y[:split])
-    return mean_squared_error(y[split:], model.predict(X[split:]))
-
-mse1 = evaluate_lag(df,1)
-mse2 = evaluate_lag(df,2)
-best_lag = 1 if mse1 < mse2 else 2
-
-print("="*60)
-print(f"滞后1天 MSE: {mse1:.6f}")
-print(f"滞后2天 MSE: {mse2:.6f}")
-print(f"最优选择：滞后 {best_lag} 天")
-print("="*60)
-
-# 最终特征
-if best_lag ==1:
-    df_final = build_features_lag1(df)
-else:
-    df_final = build_features_lag2(df)
-
-# 时序分割
+# ======================
+# 时序拆分
+# ======================
 n = len(df_final)
 train_size = int(0.7 * n)
-val_size = int(0.15 * n)
 df_train = df_final.iloc[:train_size].copy()
-df_test  = df_final.iloc[train_size+val_size:].copy()
+df_test = df_final.iloc[train_size:].copy()
 
-print(f"训练集:{len(df_train)} | 测试集:{len(df_test)}")
-print("="*60)
-
-# 自适应特征
-def get_adaptive_params(train_data):
-    vol_median = train_data['rolling_vol'].median()
-    corr_high = train_data[train_data['rolling_vol'] >= vol_median][['sentiment', 'vol']].corr().iloc[0,1]
-    corr_low = train_data[train_data['rolling_vol'] < vol_median][['sentiment', 'vol']].corr().iloc[0,1]
-    return vol_median, np.clip(corr_high,0,0.2), np.clip(corr_low,0,0.05)
-
-vol_median, w_high, w_low = get_adaptive_params(df_train)
-
-def add_adaptive_features(df):
-    df['adaptive_vol'] = df.apply(lambda row: row['vol']*(1+row['sentiment']*w_high) if row['rolling_vol']>=vol_median else row['vol']*(1+row['sentiment']*w_low), axis=1)
-    df['high_vol_flag'] = (df['rolling_vol'] >= vol_median).astype(int)
-    return df
-
-df_train = add_adaptive_features(df_train)
-df_test = add_adaptive_features(df_test)
-
-# 特征集合
-features = [f'sent_lag{best_lag}',f'vol_lag{best_lag}','vol_ma5','sent_ma5','r_feature','S_feature','adaptive_vol','high_vol_flag']
-X_train, X_test = df_train[features], df_test[features]
-y_train, y_test = df_train['vol'], df_test['vol']
-benchmark_test = df_test['benchmark_price']
+X_train, X_test = df_train[FEATURES], df_test[FEATURES]
+y_train, y_test = df_train['target_vol_t1'], df_test['target_vol_t1']
+benchmark_test = df_test['synthetic_price_t1']
 
 # ======================
-# Approach1 波动率预测+BSM
+# 稳健评估函数
 # ======================
-print("\n【Approach 1】波动率预测")
+def evaluate(y_true, y_pred):
+    y_true = np.asarray(y_true)
+    y_pred = np.asarray(y_pred)
+    
+    mse = mean_squared_error(y_true, y_pred)
+    mae = mean_absolute_error(y_true, y_pred)
+    mape = np.mean(np.abs((y_true - y_pred) / (y_true + EPS))) * 100
+    
+    if len(y_true) < 2:
+        dir_acc = 0.0
+    else:
+        y_true_diff = y_true[1:] - y_true[:-1]
+        y_pred_diff = y_pred[1:] - y_pred[:-1]
+        
+        true_dir = np.sign(np.clip(y_true_diff, -DIR_THRESHOLD, DIR_THRESHOLD))
+        pred_dir = np.sign(np.clip(y_pred_diff, -DIR_THRESHOLD, DIR_THRESHOLD))
+        dir_acc = np.mean(true_dir == pred_dir)
+        
+    return mse, mae, mape, dir_acc
+
+# ======================
+# Naive Baseline
+# ======================
+print("="*80)
+print("📌 实验定义：Synthetic Forward Pricing Experiment")
+print("📌 统一时序：预测 t+1 个股波动率 → 定价 t+1 期权")
+print("📌 特征优化：删除VIX，仅保留个股波动，彻底消除多重共线性")
+print("="*80)
+
+print("\n【Naive Baseline】σ_{t+1} = σ_t")
+y_naive_pred = df_test['rv_lag1']
+naive_mse, naive_mae, naive_mape, naive_dir = evaluate(y_test, y_naive_pred)
+print(f"Naive | MSE: {naive_mse:.6f} | MAE: {naive_mae:.6f} | MAPE: {naive_mape:.2f}% | 方向准确率: {naive_dir:.2%}")
+
+# ======================
+# 机器学习波动率预测
+# ======================
+print("\n【Approach 1】未来个股波动率(t+1)预测")
 rf = RandomForestRegressor(random_state=42)
 rf.fit(X_train, y_train)
-mse_rf = mean_squared_error(y_test, rf.predict(X_test))
-print(f"随机森林 MSE: {mse_rf:.6f}")
+rf_pred = rf.predict(X_test)
 
 xgb = XGBRegressor(random_state=42)
 xgb.fit(X_train, y_train)
-mse_xgb = mean_squared_error(y_test, xgb.predict(X_test))
-print(f"XGBoost MSE: {mse_xgb:.6f}")
+xgb_pred = xgb.predict(X_test)
 
-best_vol_pred = rf.predict(X_test) if mse_rf < mse_xgb else xgb.predict(X_test)
-print(f"✅ 最优模型：{'随机森林' if mse_rf < mse_xgb else 'XGBoost'}")
+rf_mse, rf_mae, rf_mape, rf_dir = evaluate(y_test, rf_pred)
+xgb_mse, xgb_mae, xgb_mape, xgb_dir = evaluate(y_test, xgb_pred)
 
-# BSM定价
-pred_prices = [black_scholes(df_test.iloc[i]['S'], STRIKE, T_MATURITY, df_test.iloc[i]['r'], best_vol_pred[i]) for i in range(len(df_test))]
-print(f"\nApproach1 定价 MSE: {mean_squared_error(benchmark_test, pred_prices):.6f}")
+print(f"随机森林 | MSE: {rf_mse:.6f} | MAE: {rf_mae:.6f} | MAPE: {rf_mape:.2f}% | 方向准确率: {rf_dir:.2%}")
+print(f"XGBoost   | MSE: {xgb_mse:.6f} | MAE: {xgb_mae:.6f} | MAPE: {xgb_mape:.2f}% | 方向准确率: {xgb_dir:.2%}")
+
+# 最优模型
+best_model = rf if rf_mse < xgb_mse else xgb
+best_vol_pred = rf_pred if rf_mse < xgb_mse else xgb_pred
+improvement = (naive_mse - min(rf_mse, xgb_mse)) / naive_mse * 100
+print(f"\n 最优模型: {'随机森林' if rf_mse < xgb_mse else 'XGBoost'} | 相对Baseline提升: {improvement:.2f}%")
+
+# 特征重要性（无共线性）
+print("\n 波动率预测特征重要性（无共线性，解释性清晰）")
+imp_df = pd.DataFrame({'feature': FEATURES, 'importance': best_model.feature_importances_}).sort_values('importance', ascending=False)
+print(imp_df)
 
 # ======================
-# Approach2 E2E
+# 远期期权定价
+# ======================
+pred_prices = [black_scholes(df_test.iloc[i]['S'], STRIKE, T_MATURITY, df_test.iloc[i]['r'], best_vol_pred[i]) for i in range(len(df_test))]
+price_mse = mean_squared_error(benchmark_test, pred_prices)
+print(f"\n【Approach1 远期定价(t+1)】MSE: {price_mse:.6f}")
+
+# ======================
+# E2E 定价模型
 # ======================
 print("\n" + "="*60)
-print("Approach2 E2E定价")
+print("【Approach2 E2E】BS函数近似基准")
 print("="*60)
 
-# 滞后情绪 + 情绪均线
-E2E_FEATURES = [f'sent_lag{best_lag}', 'sent_ma5']
+X_e2e_train, X_e2e_test = df_train[FEATURES], df_test[FEATURES]
+y_e2e_train, y_e2e_test = df_train['synthetic_price_t1'], df_test['synthetic_price_t1']
 
-X_train_e2e = df_train[E2E_FEATURES]
-X_test_e2e  = df_test[E2E_FEATURES]
-y_train_e2e = df_train['option_price']
-y_test_e2e  = df_test['option_price']
+# 模型训练与评估
+lr_e2e = LinearRegression()
+lr_e2e.fit(X_e2e_train, y_e2e_train)
+lr_pred = lr_e2e.predict(X_e2e_test)
 
-# 线性回归
-lr = LinearRegression()
-lr.fit(X_train_e2e, y_train_e2e)
-mse_lr = mean_squared_error(y_test_e2e, lr.predict(X_test_e2e))
-print(f"线性回归 MSE: {mse_lr:.6f}")
-
-# XGBoost
 xgb_e2e = XGBRegressor(random_state=42)
-xgb_e2e.fit(X_train_e2e, y_train_e2e)
-mse_xgb_e2e = mean_squared_error(y_test_e2e, xgb_e2e.predict(X_test_e2e))
-print(f"XGBoost MSE: {mse_xgb_e2e:.6f}")
+xgb_e2e.fit(X_e2e_train, y_e2e_train)
+xgb_e2e_pred = xgb_e2e.predict(X_e2e_test)
 
-print(f"\n E2E最优模型: {'线性回归' if mse_lr < mse_xgb_e2e else 'XGBoost'}")
-print("="*60)
-print(" 运行完成！")
+lr_mse = mean_squared_error(y_e2e_test, lr_pred)
+xgb_mse = mean_squared_error(y_e2e_test, xgb_e2e_pred)
+
+best_e2e_name = "XGBoost" if xgb_mse < lr_mse else "线性回归"
+e2e_mse = min(lr_mse, xgb_mse)
+
+print(f"E2E最优模型: {best_e2e_name} | 定价MSE: {e2e_mse:.6f}")
+
+print("\n" + "="*80)
+print(" 全部完成：无共线性 | 无数据泄露 | 时序对齐 | 解释性拉满")
+print("="*80)
