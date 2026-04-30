@@ -57,7 +57,6 @@ def build_features(data):
     return df.dropna()
 
 df_final = build_features(df)
-# 最终特征：无VIX，无共线性
 FEATURES = ['sent_lag1', 'S_lag1', 'r_lag1', 'rv_lag1', 'sent_ma5']
 
 # ======================
@@ -73,7 +72,7 @@ y_train, y_test = df_train['target_vol_t1'], df_test['target_vol_t1']
 benchmark_test = df_test['synthetic_price_t1']
 
 # ======================
-# 稳健评估函数
+# 评估函数
 # ======================
 def evaluate(y_true, y_pred):
     y_true = np.asarray(y_true)
@@ -99,9 +98,7 @@ def evaluate(y_true, y_pred):
 # Naive Baseline
 # ======================
 print("="*80)
-print("📌 实验定义：Synthetic Forward Pricing Experiment")
-print("📌 统一时序：预测 t+1 个股波动率 → 定价 t+1 期权")
-print("📌 特征优化：删除VIX，仅保留个股波动，彻底消除多重共线性")
+print("统一时序：预测 t+1 个股波动率 → 定价 t+1 期权")
 print("="*80)
 
 print("\n【Naive Baseline】σ_{t+1} = σ_t")
@@ -112,7 +109,7 @@ print(f"Naive | MSE: {naive_mse:.6f} | MAE: {naive_mae:.6f} | MAPE: {naive_mape:
 # ======================
 # 机器学习波动率预测
 # ======================
-print("\n【Approach 1】未来个股波动率(t+1)预测")
+print("\n【Approach 1】")
 rf = RandomForestRegressor(random_state=42)
 rf.fit(X_train, y_train)
 rf_pred = rf.predict(X_test)
@@ -133,8 +130,8 @@ best_vol_pred = rf_pred if rf_mse < xgb_mse else xgb_pred
 improvement = (naive_mse - min(rf_mse, xgb_mse)) / naive_mse * 100
 print(f"\n 最优模型: {'随机森林' if rf_mse < xgb_mse else 'XGBoost'} | 相对Baseline提升: {improvement:.2f}%")
 
-# 特征重要性（无共线性）
-print("\n 波动率预测特征重要性（无共线性，解释性清晰）")
+# 特征重要性
+print("\n 波动率预测特征重要性")
 imp_df = pd.DataFrame({'feature': FEATURES, 'importance': best_model.feature_importances_}).sort_values('importance', ascending=False)
 print(imp_df)
 
@@ -143,13 +140,13 @@ print(imp_df)
 # ======================
 pred_prices = [black_scholes(df_test.iloc[i]['S'], STRIKE, T_MATURITY, df_test.iloc[i]['r'], best_vol_pred[i]) for i in range(len(df_test))]
 price_mse = mean_squared_error(benchmark_test, pred_prices)
-print(f"\n【Approach1 远期定价(t+1)】MSE: {price_mse:.6f}")
+print(f"\n【Approach1】MSE: {price_mse:.6f}")
 
 # ======================
 # E2E 定价模型
 # ======================
 print("\n" + "="*60)
-print("【Approach2 E2E】BS函数近似基准")
+print("【Approach2 E2E】")
 print("="*60)
 
 X_e2e_train, X_e2e_test = df_train[FEATURES], df_test[FEATURES]
@@ -173,5 +170,5 @@ e2e_mse = min(lr_mse, xgb_mse)
 print(f"E2E最优模型: {best_e2e_name} | 定价MSE: {e2e_mse:.6f}")
 
 print("\n" + "="*80)
-print(" 全部完成：无共线性 | 无数据泄露 | 时序对齐 | 解释性拉满")
+print(" 全部完成")
 print("="*80)
