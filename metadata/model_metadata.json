@@ -1,0 +1,19 @@
+{
+    "features": [
+        "sent_lag1",
+        "S_lag1",
+        "r_lag1",
+        "rv_lag1",
+        "sent_ma5"
+    ],
+    "best_model": "Linear Regression",
+    "volatility_annualization": 252,
+    "train_period": [
+        "2018-02-06 00:00:00",
+        "2019-06-04 00:00:00"
+    ],
+    "test_period": [
+        "2019-06-05 00:00:00",
+        "2019-12-27 00:00:00"
+    ]
+}
