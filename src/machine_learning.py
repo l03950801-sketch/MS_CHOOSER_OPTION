@@ -1,5 +1,4 @@
-# Week 5 & 6 | Volatility Forecasting & Forward Option Pricing
-# Machine Learning Implementation - Morgan Stanley Quantitative Research Standard
+# Week 5 & 6 Volatility Forecasting & Forward Option Pricing
 import pandas as pd
 import numpy as np
 import sys
@@ -13,7 +12,6 @@ import shap
 import matplotlib.pyplot as plt
 from sklearn.linear_model import LinearRegression
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.ensemble import RandomForestRegressor
 from xgboost import XGBRegressor
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from sklearn.model_selection import TimeSeriesSplit, GridSearchCV, RandomizedSearchCV
@@ -23,13 +21,11 @@ from scipy.stats import norm
 import warnings
 warnings.filterwarnings('ignore')
 
-# Reproducibility Configuration
 SEED = 42
 random.seed(SEED)
 np.random.seed(SEED)
 os.environ["PYTHONHASHSEED"] = str(SEED)
 
-# Global Model Parameters
 TRADING_DAYS = 252
 ROLLING_WINDOW = 20
 STRIKE = 110
@@ -39,26 +35,16 @@ DIR_THRESHOLD = 0.001
 TEST_SIZE = 0.3
 GAP_DAYS = ROLLING_WINDOW
 
-# Directory Initialization
 for directory in ["models", "plots", "cv_results", "metadata"]:
     os.makedirs(directory, exist_ok=True)
 
-# ------------------------------
-# Data Preprocessing
-# ------------------------------
 df = pd.read_csv("data/processed_data.csv")
 df = df.sort_values("date").reset_index(drop=True)
 df["date"] = pd.to_datetime(df["date"])
 
-# Realized Volatility Calculation
 df["rolling_vol"] = df["return"].rolling(ROLLING_WINDOW).std() * np.sqrt(TRADING_DAYS)
 df["target_vol_t1"] = df["rolling_vol"].shift(-1)
 
-# T+1 Underlying Variables for Forward Pricing
-df["S_t1"] = df["S"].shift(-1)
-df["r_t1"] = df["r"].shift(-1)
-
-# Vectorized Black-Scholes-Merton Pricing Function
 def black_scholes_vec(S, K, T, r, sigma):
     S = np.asarray(S, dtype=float)
     r = np.asarray(r, dtype=float)
@@ -72,15 +58,11 @@ def black_scholes_vec(S, K, T, r, sigma):
     
     return np.where(invalid, np.nan, price)
 
-# Synthetic Forward Option Price (Oracle Benchmark)
-df["synthetic_price_t1"] = black_scholes_vec(
-    df["S_t1"], STRIKE, T_MATURITY, df["r_t1"], df["target_vol_t1"]
+df["synthetic_oracle_price"] = black_scholes_vec(
+    df["S"], STRIKE, T_MATURITY, df["r"], df["rolling_vol"]
 )
 df = df.dropna().reset_index(drop=True)
 
-# ------------------------------
-# Feature Engineering
-# ------------------------------
 def build_features(data):
     df = data.copy()
     df['sent_lag1'] = df['sentiment'].shift(1)
@@ -93,9 +75,6 @@ def build_features(data):
 df_final = build_features(df)
 FEATURES = ['sent_lag1', 'S_lag1', 'r_lag1', 'rv_lag1', 'sent_ma5']
 
-# ------------------------------
-# Time-Series Train/Test Split
-# ------------------------------
 n_total = len(df_final)
 test_split_idx = int(n_total * (1 - TEST_SIZE))
 
@@ -105,15 +84,11 @@ df_test = df_final.iloc[test_split_idx:].copy()
 X_train, X_test = df_train[FEATURES], df_test[FEATURES]
 y_train, y_test = df_train['target_vol_t1'], df_test['target_vol_t1']
 
-# Time-Series Cross-Validation
 try:
     tscv = TimeSeriesSplit(n_splits=5, gap=GAP_DAYS)
 except TypeError:
     tscv = TimeSeriesSplit(n_splits=5)
 
-# ------------------------------
-# Model Evaluation Metrics
-# ------------------------------
 def evaluate(y_true, y_pred):
     y_true = np.asarray(y_true)
     y_pred = np.asarray(y_pred)
@@ -126,7 +101,6 @@ def evaluate(y_true, y_pred):
     mape = np.mean(np.abs((y_true - y_pred) / (y_true + EPS))) * 100
     r2 = r2_score(y_true, y_pred)
     
-    # Directional Accuracy
     dir_acc = 0.0
     if len(y_true) >= 2:
         true_diff = np.sign(np.clip(y_true[1:] - y_true[:-1], -DIR_THRESHOLD, DIR_THRESHOLD))
@@ -135,20 +109,13 @@ def evaluate(y_true, y_pred):
         
     return mse, mae, rmse, mape, dir_acc, r2
 
-# ------------------------------
-# Week 5: Naive Forecasting Baseline
-# ------------------------------
 print("T+1 Volatility Forecasting & Forward Option Pricing")
 print("Naive Forecast Performance (Persistence Model)")
 vol_naive = df_test['rv_lag1']
 naive_metrics = evaluate(y_test, vol_naive)
 print(f"MSE: {naive_metrics[0]:.6f} | MAE: {naive_metrics[1]:.6f} | MAPE: {naive_metrics[3]:.2f}% | Directional Accuracy: {naive_metrics[4]:.2%}")
 
-# ------------------------------
-# Week 5: Base ML Models Implementation
-# ------------------------------
 print("\nBase Machine Learning Model Performance")
-# Base Model Training
 rf_base = RandomForestRegressor(random_state=SEED)
 rf_base.fit(X_train, y_train)
 rf_base_pred = rf_base.predict(X_test)
@@ -157,14 +124,12 @@ xgb_base = XGBRegressor(random_state=SEED)
 xgb_base.fit(X_train, y_train)
 xgb_base_pred = xgb_base.predict(X_test)
 
-# Base Model Evaluation
 rf_base_metrics = evaluate(y_test, rf_base_pred)
 xgb_base_metrics = evaluate(y_test, xgb_base_pred)
 
 print(f"Random Forest | MSE: {rf_base_metrics[0]:.6f} | MAE: {rf_base_metrics[1]:.6f} | MAPE: {rf_base_metrics[3]:.2f}%")
 print(f"XGBoost       | MSE: {xgb_base_metrics[0]:.6f} | MAE: {xgb_base_metrics[1]:.6f} | MAPE: {xgb_base_metrics[3]:.2f}%")
 
-# Optimal Base Model Selection
 base_model_perf = {
     "Random Forest": rf_base_metrics[0],
     "XGBoost": xgb_base_metrics[0]
@@ -175,7 +140,6 @@ improvement = (naive_metrics[0] - min(base_model_perf.values())) / naive_metrics
 
 print(f"\nOptimal Base Model: {best_base_model} | MSE Improvement vs Baseline: {improvement:.2f}%")
 
-# Feature Importance
 print("\nFeature Importance - Volatility Forecasting")
 imp_df = pd.DataFrame({
     'Feature': FEATURES,
@@ -183,25 +147,18 @@ imp_df = pd.DataFrame({
 }).sort_values('Importance', ascending=False)
 print(imp_df)
 
-# ------------------------------
-# Week 5: Two-Step Forward Option Pricing
-# ------------------------------
 print("\nTwo-Step Option Pricing Performance")
-benchmark_prices = df_test['synthetic_price_t1']
-predicted_prices = [
-    black_scholes_vec(df_test.iloc[i]['S'], STRIKE, T_MATURITY, df_test.iloc[i]['r'], best_base_vol_pred[i]) 
-    for i in range(len(df_test))
-]
+benchmark_prices = df_test['synthetic_oracle_price']
+predicted_prices = black_scholes_vec(
+    df_test["S"], STRIKE, T_MATURITY, df_test["r"], best_base_vol_pred
+)
 pricing_mse = mean_squared_error(benchmark_prices, predicted_prices)
 print(f"Pricing MSE: {pricing_mse:.6f}")
 
-# ------------------------------
-# Week 5: End-to-End (E2E) Pricing Model
-# ------------------------------
 print("\nEnd-to-End Option Pricing Model Performance")
-y_e2e_train, y_e2e_test = df_train['synthetic_price_t1'], df_test['synthetic_price_t1']
+y_e2e_train = df_train['synthetic_oracle_price']
+y_e2e_test = df_test['synthetic_oracle_price']
 
-# E2E Model Training
 lr_e2e = LinearRegression()
 lr_e2e.fit(X_train, y_e2e_train)
 lr_e2e_pred = lr_e2e.predict(X_test)
@@ -210,7 +167,6 @@ xgb_e2e = XGBRegressor(random_state=SEED)
 xgb_e2e.fit(X_train, y_e2e_train)
 xgb_e2e_pred = xgb_e2e.predict(X_test)
 
-# E2E Model Evaluation
 lr_e2e_mse = mean_squared_error(y_e2e_test, lr_e2e_pred)
 xgb_e2e_mse = mean_squared_error(y_e2e_test, xgb_e2e_pred)
 
@@ -218,13 +174,8 @@ best_e2e_model = "XGBoost" if xgb_e2e_mse < lr_e2e_mse else "Linear Regression"
 e2e_mse = min(lr_e2e_mse, xgb_e2e_mse)
 print(f"Optimal E2E Model: {best_e2e_model} | Pricing MSE: {e2e_mse:.6f}")
 
-# ------------------------------
-# Week 6: Hyperparameter Tuned Models
-# ------------------------------
-# Tuned Model Pipeline
 lr_pipeline = Pipeline([("scaler", StandardScaler()), ("lr", LinearRegression())])
 
-# Random Forest Hyperparameter Search
 rf_params = {
     "n_estimators": [200, 300], "max_depth": [3,5,7],
     "min_samples_split": [2,4], "min_samples_leaf": [1,3],
@@ -234,7 +185,6 @@ rf_search = GridSearchCV(RandomForestRegressor(), rf_params, cv=tscv, scoring="n
 rf_search.fit(X_train, y_train)
 best_rf = rf_search.best_estimator_
 
-# XGBoost Hyperparameter Search
 xgb_params = {
     "n_estimators": [200,300], "max_depth": [2,3,4], "learning_rate": [0.01,0.05,0.1],
     "subsample": [0.7,0.8], "colsample_bytree": [0.6,0.7,0.8],
@@ -245,19 +195,14 @@ xgb_search = RandomizedSearchCV(XGBRegressor(), xgb_params, n_iter=15, cv=tscv, 
 xgb_search.fit(X_train, y_train)
 best_xgb = xgb_search.best_estimator_
 
-# Tuned Model Predictions
 lr_pipeline.fit(X_train, y_train)
 lr_pred = lr_pipeline.predict(X_test)
 rf_pred = best_rf.predict(X_test)
 xgb_pred = best_xgb.predict(X_test)
 
-# ------------------------------
-# Week 6: Performance Reporting
-# ------------------------------
-# Forward Pricing Calculation
-S_t1_test = df_test["S_t1"].values
-r_t1_test = df_test["r_t1"].values
-true_price_t1 = df_test["synthetic_price_t1"].values
+S_t1_test = df_test["S"].values
+r_t1_test = df_test["r"].values
+true_price_t1 = df_test["synthetic_oracle_price"].values
 
 def price_forward(S, r, sigma_hat):
     return black_scholes_vec(S, STRIKE, T_MATURITY, r, sigma_hat)
@@ -265,7 +210,6 @@ def price_forward(S, r, sigma_hat):
 baseline_price = price_forward(S_t1_test, r_t1_test, vol_naive)
 model_prices = [price_forward(S_t1_test, r_t1_test, pred) for pred in [lr_pred, rf_pred, xgb_pred]]
 
-# Performance Tables Export
 vol_performance = pd.DataFrame({
     "Model": ["Linear Regression", "Random Forest", "XGBoost", "Persistence Baseline"],
     "MAE": [evaluate(y_test, lr_pred)[1], evaluate(y_test, rf_pred)[1], 
@@ -277,10 +221,6 @@ vol_performance = pd.DataFrame({
 })
 vol_performance.to_csv("volatility_performance.csv", index=False)
 
-# ------------------------------
-# Week 6: Model Interpretability (SHAP) - FIXED SAMPLING BUG
-# ------------------------------
-# Optimal Model Selection
 model_rmse = {
     "Linear Regression": evaluate(y_test, lr_pred)[2],
     "Random Forest": evaluate(y_test, rf_pred)[2],
@@ -289,14 +229,12 @@ model_rmse = {
 best_model_name = min(model_rmse, key=model_rmse.get)
 best_predictor = lr_pipeline if best_model_name == "Linear Regression" else (best_rf if best_model_name == "Random Forest" else best_xgb)
 
-# SHAP Analysis (Adaptive Sampling - 修复样本量不足报错)
 explainer_model = best_predictor if best_model_name in ["Random Forest", "XGBoost"] else best_xgb
-sample_size = min(500, len(X_train))  # 自适应采样，核心修复
+sample_size = min(500, len(X_train))
 X_shap = X_train.sample(sample_size, random_state=SEED)
 explainer = shap.TreeExplainer(explainer_model)
 shap_values = explainer.shap_values(X_shap)
 
-# SHAP Visualization
 shap.summary_plot(shap_values, X_shap, plot_type="bar", show=False)
 plt.title("SHAP Feature Importance")
 plt.tight_layout()
@@ -309,7 +247,6 @@ plt.tight_layout()
 plt.savefig("plots/shap_beeswarm.png", dpi=300)
 plt.close()
 
-# Volatility Prediction Visualization
 plt.figure(figsize=(12,5))
 plt.plot(df_test["date"], y_test, label="Realized Volatility (T+1)")
 plt.plot(df_test["date"], best_predictor.predict(X_test), label=f"Predicted Volatility - {best_model_name}")
@@ -319,12 +256,8 @@ plt.tight_layout()
 plt.savefig("plots/vol_prediction.png", dpi=300)
 plt.close()
 
-# ------------------------------
-# Model & Environment Export
-# ------------------------------
 pickle.dump(best_predictor, open("models/best_model_final.pkl", "wb"))
 
-# Requirements File (Audit-Compliant)
 import sklearn, xgboost
 with open("requirements.txt", "w") as f:
     f.write(f"scikit-learn=={sklearn.__version__}\n")
@@ -335,7 +268,6 @@ with open("requirements.txt", "w") as f:
     f.write(f"matplotlib=={matplotlib.__version__}\n")
     f.write(f"scipy=={scipy.__version__}\n")
 
-# Metadata Export
 metadata = {
     "features": FEATURES,
     "best_model": best_model_name,
