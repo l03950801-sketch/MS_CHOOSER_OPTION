@@ -1,0 +1,5 @@
+Model,RMSE,R2,Directional_Accuracy
+Linear Regression,0.0167,0.8856,0.5634
+Random Forest,0.0172,0.8787,0.5
+XGBoost,0.0192,0.8496,0.5493
+Persistence Baseline,0.0166,0.887,0.493

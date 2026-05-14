@@ -1,7 +1,5 @@
-# Week 5 & 6 Volatility Forecasting & Forward Option Pricing
 import pandas as pd
 import numpy as np
-import sys
 import os
 import random
 import pickle
@@ -35,7 +33,7 @@ DIR_THRESHOLD = 0.001
 TEST_SIZE = 0.3
 GAP_DAYS = ROLLING_WINDOW
 
-for directory in ["models", "plots", "cv_results", "metadata"]:
+for directory in ["models", "plots", "cv_results", "metadata", "reports"]:
     os.makedirs(directory, exist_ok=True)
 
 df = pd.read_csv("data/processed_data.csv")
@@ -44,6 +42,7 @@ df["date"] = pd.to_datetime(df["date"])
 
 df["rolling_vol"] = df["return"].rolling(ROLLING_WINDOW).std() * np.sqrt(TRADING_DAYS)
 df["target_vol_t1"] = df["rolling_vol"].shift(-1)
+df["rv_lag1"] = df["rolling_vol"].shift(1)
 
 def black_scholes_vec(S, K, T, r, sigma):
     S = np.asarray(S, dtype=float)
@@ -58,8 +57,9 @@ def black_scholes_vec(S, K, T, r, sigma):
     
     return np.where(invalid, np.nan, price)
 
-df["synthetic_oracle_price"] = black_scholes_vec(
-    df["S"], STRIKE, T_MATURITY, df["r"], df["rolling_vol"]
+# 修正：基准BSM价格（历史波动率，非Oracle）
+df["benchmark_bsm_price"] = black_scholes_vec(
+    df["S"], STRIKE, T_MATURITY, df["r"], df["rv_lag1"]
 )
 df = df.dropna().reset_index(drop=True)
 
@@ -148,7 +148,7 @@ imp_df = pd.DataFrame({
 print(imp_df)
 
 print("\nTwo-Step Option Pricing Performance")
-benchmark_prices = df_test['synthetic_oracle_price']
+benchmark_prices = df_test['benchmark_bsm_price']
 predicted_prices = black_scholes_vec(
     df_test["S"], STRIKE, T_MATURITY, df_test["r"], best_base_vol_pred
 )
@@ -156,8 +156,8 @@ pricing_mse = mean_squared_error(benchmark_prices, predicted_prices)
 print(f"Pricing MSE: {pricing_mse:.6f}")
 
 print("\nEnd-to-End Option Pricing Model Performance")
-y_e2e_train = df_train['synthetic_oracle_price']
-y_e2e_test = df_test['synthetic_oracle_price']
+y_e2e_train = df_train['benchmark_bsm_price']
+y_e2e_test = df_test['benchmark_bsm_price']
 
 lr_e2e = LinearRegression()
 lr_e2e.fit(X_train, y_e2e_train)
@@ -202,7 +202,7 @@ xgb_pred = best_xgb.predict(X_test)
 
 S_t1_test = df_test["S"].values
 r_t1_test = df_test["r"].values
-true_price_t1 = df_test["synthetic_oracle_price"].values
+true_price_t1 = df_test["benchmark_bsm_price"].values
 
 def price_forward(S, r, sigma_hat):
     return black_scholes_vec(S, STRIKE, T_MATURITY, r, sigma_hat)
@@ -236,13 +236,11 @@ explainer = shap.TreeExplainer(explainer_model)
 shap_values = explainer.shap_values(X_shap)
 
 shap.summary_plot(shap_values, X_shap, plot_type="bar", show=False)
-plt.title("SHAP Feature Importance")
 plt.tight_layout()
 plt.savefig("plots/shap_importance.png", dpi=300)
 plt.close()
 
 shap.summary_plot(shap_values, X_shap, show=False)
-plt.title("SHAP Value Distribution")
 plt.tight_layout()
 plt.savefig("plots/shap_beeswarm.png", dpi=300)
 plt.close()
@@ -256,6 +254,95 @@ plt.tight_layout()
 plt.savefig("plots/vol_prediction.png", dpi=300)
 plt.close()
 
+# 核心计算
+y_pred_vol = best_predictor.predict(X_test)
+vol_residual = y_test - y_pred_vol
+actual_option_price = df_test["benchmark_bsm_price"]
+ml_option_price = black_scholes_vec(df_test["S"], STRIKE, T_MATURITY, df_test["r"], y_pred_vol)
+price_residual = actual_option_price - ml_option_price
+residual_std = np.std(price_residual, ddof=1)
+price_ci_95 = 1.96 * residual_std
+
+vol_residual_std = np.std(vol_residual, ddof=1)
+vol_ci_95 = 1.96 * vol_residual_std
+
+print("\n======================================================================")
+print("95% CONFIDENCE INTERVAL (Statistical Strict)")
+print("======================================================================")
+print(f"Volatility Forecast 95% CI: ± {vol_ci_95:.4f}")
+print(f"Option ML Price 95% CI:     ± {price_ci_95:.4f}")
+
+# 双定价表
+ci_df = df_test[["date", "S", "r"]].copy()
+ci_df["BSM_Price"] = black_scholes_vec(ci_df["S"], STRIKE, T_MATURITY, ci_df["r"], df_test["rv_lag1"])
+ci_df["ML_Price"] = ml_option_price
+ci_df["ML_Price_95CI_Upper"] = ml_option_price + price_ci_95
+ci_df["ML_Price_95CI_Lower"] = ml_option_price - price_ci_95
+ci_df["Price_Diff"] = ci_df["ML_Price"] - ci_df["BSM_Price"]
+ci_df.round(4).to_csv("reports/dual_pricing_with_95CI.csv", index=False)
+
+# 残差分布图
+plt.figure(figsize=(12,5))
+plt.hist(vol_residual, bins=30, alpha=0.7, color="steelblue", edgecolor="black")
+plt.title("Volatility Forecast Residual Distribution")
+plt.xlabel("Residual")
+plt.ylabel("Frequency")
+plt.tight_layout()
+plt.savefig("plots/vol_residual_hist.png", dpi=300)
+plt.close()
+
+plt.figure(figsize=(12,5))
+plt.hist(price_residual, bins=30, alpha=0.7, color="darkred", edgecolor="black")
+plt.title("Option Pricing Residual Distribution")
+plt.xlabel("Residual")
+plt.ylabel("Frequency")
+plt.tight_layout()
+plt.savefig("plots/price_residual_hist.png", dpi=300)
+plt.close()
+
+# 可视化仪表盘
+plt.figure(figsize=(14,5))
+plt.plot(df_test["date"], y_test, label="Realized Volatility")
+plt.plot(df_test["date"], best_predictor.predict(X_test), label=f"Predicted Vol ({best_model_name})")
+plt.title("Volatility Forecast Dashboard")
+plt.legend()
+plt.tight_layout()
+plt.savefig("plots/vol_forecast_dashboard.png", dpi=300)
+plt.close()
+
+plt.figure(figsize=(14,5))
+plt.plot(ci_df["date"], ci_df["BSM_Price"], label="BSM Price")
+plt.plot(ci_df["date"], ci_df["ML_Price"], label="ML Price")
+plt.title("Option Pricing: Traditional vs ML-Enhanced")
+plt.legend()
+plt.tight_layout()
+plt.savefig("plots/dual_pricing_trend.png", dpi=300)
+plt.close()
+
+# Vega敏感性分析
+vol_test_range = np.linspace(0.05, 0.4, 50)
+sample_S = df_test["S"].iloc[0]
+sample_r = df_test["r"].iloc[0]
+option_values = [black_scholes_vec(sample_S, STRIKE, T_MATURITY, sample_r, v) for v in vol_test_range]
+
+plt.figure(figsize=(10,5))
+plt.plot(vol_test_range, option_values, linewidth=3, color='brown')
+plt.xlabel("Volatility")
+plt.ylabel("Option Price")
+plt.title("Option Price Sensitivity to Volatility (Vega)")
+plt.tight_layout()
+plt.savefig("plots/vol_sensitivity_vega.png", dpi=300)
+plt.close()
+
+gov_df = pd.DataFrame({
+    "Model": ["Linear Regression", "Random Forest", "XGBoost", "Persistence Baseline"],
+    "RMSE": [evaluate(y_test, lr_pred)[2], evaluate(y_test, rf_pred)[2], evaluate(y_test, xgb_pred)[2], naive_metrics[2]],
+    "R2": [evaluate(y_test, lr_pred)[5], evaluate(y_test, rf_pred)[5], evaluate(y_test, xgb_pred)[5], naive_metrics[5]],
+    "Directional_Accuracy": [evaluate(y_test, lr_pred)[4], evaluate(y_test, rf_pred)[4], evaluate(y_test, xgb_pred)[4], naive_metrics[4]]
+}).round(4)
+gov_df.to_csv("reports/model_governance_report.csv", index=False)
+
+# 模型与配置保存
 pickle.dump(best_predictor, open("models/best_model_final.pkl", "wb"))
 
 import sklearn, xgboost
@@ -277,5 +364,3 @@ metadata = {
 }
 with open("metadata/model_metadata.json", "w", encoding="utf-8") as f:
     json.dump(metadata, f, ensure_ascii=False, indent=4)
-
-print("\nAnalysis Completed Successfully")
