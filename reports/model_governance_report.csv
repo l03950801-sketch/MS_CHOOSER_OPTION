@@ -1,5 +1,5 @@
-Model,RMSE,R2,Directional_Accuracy
-Linear Regression,0.0167,0.8856,0.5634
-Random Forest,0.0172,0.8787,0.5
-XGBoost,0.0192,0.8496,0.5493
-Persistence Baseline,0.0166,0.887,0.493
+Model,RMSE,R2,Random_State,Train_Test_Split,TSCV_Splits,GAP_DAYS,E2E_Hyperparameters
+Linear Regression,0.023886813124336607,0.8117012048146464,42,70/30,3,5,-
+Random Forest,0.03365201051280188,0.6262741406154166,42,70/30,3,5,-
+XGBoost,0.03494932324427774,0.5969038423498358,42,70/30,3,5,-
+E2E Pricing,1.4956175140324297,0.6489104225736999,42,70/30,3,5,"n_estimators=200, max_depth=3, learning_rate=0.05, subsample=0.8, colsample_bytree=0.8, reg_lambda=5"
