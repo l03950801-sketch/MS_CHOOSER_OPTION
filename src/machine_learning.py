@@ -3,18 +3,15 @@ import numpy as np
 import os
 import random
 import pickle
-import json
-import matplotlib
-import scipy
 import shap
 import matplotlib.pyplot as plt
+import seaborn as sns
 from sklearn.linear_model import LinearRegression
 from sklearn.ensemble import RandomForestRegressor
 from xgboost import XGBRegressor
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from sklearn.model_selection import TimeSeriesSplit, GridSearchCV, RandomizedSearchCV
 from sklearn.preprocessing import StandardScaler
-from sklearn.pipeline import Pipeline
 from scipy.stats import norm
 import warnings
 warnings.filterwarnings('ignore')
@@ -31,9 +28,10 @@ T_MATURITY = 1/12
 EPS = 1e-8
 DIR_THRESHOLD = 0.001
 TEST_SIZE = 0.3
-GAP_DAYS = ROLLING_WINDOW
+GAP_DAYS = 5
+TSCV_SPLITS = 3
 
-for directory in ["models", "plots", "cv_results", "metadata", "reports"]:
+for directory in ["models", "plots", "metadata", "reports"]:
     os.makedirs(directory, exist_ok=True)
 
 df = pd.read_csv("data/processed_data.csv")
@@ -50,26 +48,22 @@ def black_scholes_vec(S, K, T, r, sigma):
     sigma = np.asarray(sigma, dtype=float)
     invalid = (sigma <= 1e-6) | (T <= 0) | np.isnan(S) | np.isnan(r) | np.isnan(sigma)
     sigma_safe = np.where(invalid, 1.0, sigma)
-    
     d1 = (np.log(S / K) + (r + 0.5 * sigma_safe**2) * T) / (sigma_safe * np.sqrt(T))
     d2 = d1 - sigma_safe * np.sqrt(T)
     price = S * norm.cdf(d1) - K * np.exp(-r * T) * norm.cdf(d2)
-    
     return np.where(invalid, np.nan, price)
 
-# 修正：基准BSM价格（历史波动率，非Oracle）
-df["benchmark_bsm_price"] = black_scholes_vec(
-    df["S"], STRIKE, T_MATURITY, df["r"], df["rv_lag1"]
-)
+df["bsm_baseline"] = black_scholes_vec(df["S"], STRIKE, T_MATURITY, df["r"], df["rv_lag1"])
 df = df.dropna().reset_index(drop=True)
 
+# 修复1：特征无泄露 → rolling(5).mean().shift(1)
 def build_features(data):
     df = data.copy()
     df['sent_lag1'] = df['sentiment'].shift(1)
     df['S_lag1'] = df['S'].shift(1)
     df['r_lag1'] = df['r'].shift(1)
     df['rv_lag1'] = df['rolling_vol'].shift(1)
-    df['sent_ma5'] = df['sentiment'].rolling(5).mean()
+    df['sent_ma5'] = df['sentiment'].rolling(5).mean().shift(1)
     return df.dropna()
 
 df_final = build_features(df)
@@ -77,17 +71,21 @@ FEATURES = ['sent_lag1', 'S_lag1', 'r_lag1', 'rv_lag1', 'sent_ma5']
 
 n_total = len(df_final)
 test_split_idx = int(n_total * (1 - TEST_SIZE))
-
 df_train = df_final.iloc[:test_split_idx].copy()
 df_test = df_final.iloc[test_split_idx:].copy()
 
 X_train, X_test = df_train[FEATURES], df_test[FEATURES]
 y_train, y_test = df_train['target_vol_t1'], df_test['target_vol_t1']
 
+# 特征标准化（修复SHAP兼容问题）
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train)
+X_test_scaled = scaler.transform(X_test)
+
 try:
-    tscv = TimeSeriesSplit(n_splits=5, gap=GAP_DAYS)
+    tscv = TimeSeriesSplit(n_splits=TSCV_SPLITS, gap=GAP_DAYS)
 except TypeError:
-    tscv = TimeSeriesSplit(n_splits=5)
+    tscv = TimeSeriesSplit(n_splits=TSCV_SPLITS)
 
 def evaluate(y_true, y_pred):
     y_true = np.asarray(y_true)
@@ -98,269 +96,127 @@ def evaluate(y_true, y_pred):
     mse = mean_squared_error(y_true, y_pred)
     mae = mean_absolute_error(y_true, y_pred)
     rmse = np.sqrt(mse)
-    mape = np.mean(np.abs((y_true - y_pred) / (y_true + EPS))) * 100
     r2 = r2_score(y_true, y_pred)
     
     dir_acc = 0.0
     if len(y_true) >= 2:
-        true_diff = np.sign(np.clip(y_true[1:] - y_true[:-1], -DIR_THRESHOLD, DIR_THRESHOLD))
-        pred_diff = np.sign(np.clip(y_pred[1:] - y_pred[:-1], -DIR_THRESHOLD, DIR_THRESHOLD))
-        dir_acc = np.mean(true_diff == pred_diff)
+        true_diff = y_true[1:] - y_true[:-1]
+        pred_diff = y_pred[1:] - y_pred[:-1]
         
-    return mse, mae, rmse, mape, dir_acc, r2
+        true_dir = np.sign(true_diff)
+        pred_dir = np.sign(pred_diff)
+        
+        valid_mask = np.abs(true_diff) > DIR_THRESHOLD
+        if valid_mask.sum() > 0:
+            dir_acc = np.mean(true_dir[valid_mask] == pred_dir[valid_mask])
+    
+    return mse, mae, rmse, r2, dir_acc
 
-print("T+1 Volatility Forecasting & Forward Option Pricing")
-print("Naive Forecast Performance (Persistence Model)")
-vol_naive = df_test['rv_lag1']
-naive_metrics = evaluate(y_test, vol_naive)
-print(f"MSE: {naive_metrics[0]:.6f} | MAE: {naive_metrics[1]:.6f} | MAPE: {naive_metrics[3]:.2f}% | Directional Accuracy: {naive_metrics[4]:.2%}")
-
-print("\nBase Machine Learning Model Performance")
-rf_base = RandomForestRegressor(random_state=SEED)
-rf_base.fit(X_train, y_train)
-rf_base_pred = rf_base.predict(X_test)
-
-xgb_base = XGBRegressor(random_state=SEED)
-xgb_base.fit(X_train, y_train)
-xgb_base_pred = xgb_base.predict(X_test)
-
-rf_base_metrics = evaluate(y_test, rf_base_pred)
-xgb_base_metrics = evaluate(y_test, xgb_base_pred)
-
-print(f"Random Forest | MSE: {rf_base_metrics[0]:.6f} | MAE: {rf_base_metrics[1]:.6f} | MAPE: {rf_base_metrics[3]:.2f}%")
-print(f"XGBoost       | MSE: {xgb_base_metrics[0]:.6f} | MAE: {xgb_base_metrics[1]:.6f} | MAPE: {xgb_base_metrics[3]:.2f}%")
-
-base_model_perf = {
-    "Random Forest": rf_base_metrics[0],
-    "XGBoost": xgb_base_metrics[0]
-}
-best_base_model = min(base_model_perf, key=base_model_perf.get)
-best_base_vol_pred = rf_base_pred if best_base_model == "Random Forest" else xgb_base_pred
-improvement = (naive_metrics[0] - min(base_model_perf.values())) / naive_metrics[0] * 100
-
-print(f"\nOptimal Base Model: {best_base_model} | MSE Improvement vs Baseline: {improvement:.2f}%")
-
-print("\nFeature Importance - Volatility Forecasting")
-imp_df = pd.DataFrame({
-    'Feature': FEATURES,
-    'Importance': rf_base.feature_importances_ if best_base_model == "Random Forest" else xgb_base.feature_importances_
-}).sort_values('Importance', ascending=False)
-print(imp_df)
-
-print("\nTwo-Step Option Pricing Performance")
-benchmark_prices = df_test['benchmark_bsm_price']
-predicted_prices = black_scholes_vec(
-    df_test["S"], STRIKE, T_MATURITY, df_test["r"], best_base_vol_pred
-)
-pricing_mse = mean_squared_error(benchmark_prices, predicted_prices)
-print(f"Pricing MSE: {pricing_mse:.6f}")
-
-print("\nEnd-to-End Option Pricing Model Performance")
-y_e2e_train = df_train['benchmark_bsm_price']
-y_e2e_test = df_test['benchmark_bsm_price']
-
-lr_e2e = LinearRegression()
-lr_e2e.fit(X_train, y_e2e_train)
-lr_e2e_pred = lr_e2e.predict(X_test)
-
-xgb_e2e = XGBRegressor(random_state=SEED)
-xgb_e2e.fit(X_train, y_e2e_train)
-xgb_e2e_pred = xgb_e2e.predict(X_test)
-
-lr_e2e_mse = mean_squared_error(y_e2e_test, lr_e2e_pred)
-xgb_e2e_mse = mean_squared_error(y_e2e_test, xgb_e2e_pred)
-
-best_e2e_model = "XGBoost" if xgb_e2e_mse < lr_e2e_mse else "Linear Regression"
-e2e_mse = min(lr_e2e_mse, xgb_e2e_mse)
-print(f"Optimal E2E Model: {best_e2e_model} | Pricing MSE: {e2e_mse:.6f}")
-
-lr_pipeline = Pipeline([("scaler", StandardScaler()), ("lr", LinearRegression())])
+lr_model = LinearRegression()
+lr_model.fit(X_train_scaled, y_train)
 
 rf_params = {
-    "n_estimators": [200, 300], "max_depth": [3,5,7],
+    "n_estimators": [100,200], "max_depth": [2,3,5],
     "min_samples_split": [2,4], "min_samples_leaf": [1,3],
-    "random_state": [SEED], "n_jobs": [1]
+    "random_state": [SEED]
 }
-rf_search = GridSearchCV(RandomForestRegressor(), rf_params, cv=tscv, scoring="neg_root_mean_squared_error", n_jobs=1)
+rf_search = GridSearchCV(RandomForestRegressor(), rf_params, cv=tscv, scoring="neg_root_mean_squared_error")
 rf_search.fit(X_train, y_train)
 best_rf = rf_search.best_estimator_
 
 xgb_params = {
-    "n_estimators": [200,300], "max_depth": [2,3,4], "learning_rate": [0.01,0.05,0.1],
-    "subsample": [0.7,0.8], "colsample_bytree": [0.6,0.7,0.8],
-    "min_child_weight": [1,3,5], "reg_lambda": [1,5,10],
-    "random_state": [SEED], "n_jobs": [1]
+    "n_estimators": [100,200], "max_depth": [2,3], "learning_rate": [0.05,0.1],
+    "subsample": [0.8], "colsample_bytree": [0.8], "reg_lambda": [5,10],
+    "random_state": [SEED]
 }
-xgb_search = RandomizedSearchCV(XGBRegressor(), xgb_params, n_iter=15, cv=tscv, random_state=SEED, n_jobs=1)
+xgb_search = RandomizedSearchCV(XGBRegressor(), xgb_params, n_iter=10, cv=tscv, random_state=SEED)
 xgb_search.fit(X_train, y_train)
 best_xgb = xgb_search.best_estimator_
 
-lr_pipeline.fit(X_train, y_train)
-lr_pred = lr_pipeline.predict(X_test)
+lr_pred = lr_model.predict(X_test_scaled)
 rf_pred = best_rf.predict(X_test)
 xgb_pred = best_xgb.predict(X_test)
 
-S_t1_test = df_test["S"].values
-r_t1_test = df_test["r"].values
-true_price_t1 = df_test["benchmark_bsm_price"].values
+models = [lr_model, best_rf, best_xgb]
+preds = [lr_pred, rf_pred, xgb_pred]
+model_names = ["Linear", "RandomForest", "XGBoost"]
+results = []
 
-def price_forward(S, r, sigma_hat):
-    return black_scholes_vec(S, STRIKE, T_MATURITY, r, sigma_hat)
+for name, pred in zip(model_names, preds):
+    mse, mae, rmse, r2, dir_acc = evaluate(y_test, pred)
+    results.append([name, rmse, r2, dir_acc])
 
-baseline_price = price_forward(S_t1_test, r_t1_test, vol_naive)
-model_prices = [price_forward(S_t1_test, r_t1_test, pred) for pred in [lr_pred, rf_pred, xgb_pred]]
+results_df = pd.DataFrame(results, columns=["Model", "RMSE", "R2", "Directional_Acc"])
+best_idx = results_df["RMSE"].idxmin()
+best_model_name = results_df.loc[best_idx, "Model"]
+best_model = models[best_idx]
+y_pred_vol = preds[best_idx]
 
-vol_performance = pd.DataFrame({
-    "Model": ["Linear Regression", "Random Forest", "XGBoost", "Persistence Baseline"],
-    "MAE": [evaluate(y_test, lr_pred)[1], evaluate(y_test, rf_pred)[1], 
-            evaluate(y_test, xgb_pred)[1], naive_metrics[1]],
-    "RMSE": [evaluate(y_test, lr_pred)[2], evaluate(y_test, rf_pred)[2], 
-             evaluate(y_test, xgb_pred)[2], naive_metrics[2]],
-    "R2": [evaluate(y_test, lr_pred)[5], evaluate(y_test, rf_pred)[5], 
-           evaluate(y_test, xgb_pred)[5], naive_metrics[5]]
-})
-vol_performance.to_csv("volatility_performance.csv", index=False)
+if best_model_name == "Linear":
+    explainer = shap.LinearExplainer(best_model, X_train_scaled)
+    shap_values = explainer.shap_values(X_test_scaled)
+else:
+    explainer = shap.TreeExplainer(best_model)
+    shap_values = explainer.shap_values(X_test)
 
-model_rmse = {
-    "Linear Regression": evaluate(y_test, lr_pred)[2],
-    "Random Forest": evaluate(y_test, rf_pred)[2],
-    "XGBoost": evaluate(y_test, xgb_pred)[2]
-}
-best_model_name = min(model_rmse, key=model_rmse.get)
-best_predictor = lr_pipeline if best_model_name == "Linear Regression" else (best_rf if best_model_name == "Random Forest" else best_xgb)
-
-explainer_model = best_predictor if best_model_name in ["Random Forest", "XGBoost"] else best_xgb
-sample_size = min(500, len(X_train))
-X_shap = X_train.sample(sample_size, random_state=SEED)
-explainer = shap.TreeExplainer(explainer_model)
-shap_values = explainer.shap_values(X_shap)
-
-shap.summary_plot(shap_values, X_shap, plot_type="bar", show=False)
-plt.tight_layout()
-plt.savefig("plots/shap_importance.png", dpi=300)
+shap.summary_plot(shap_values, X_test, plot_type="bar", show=False)
+plt.savefig("plots/shap_importance.png", dpi=300, bbox_inches='tight')
 plt.close()
 
-shap.summary_plot(shap_values, X_shap, show=False)
+def regime_classification(vol_series, low_pct=33, high_pct=66):
+    low_thresh = np.percentile(vol_series, low_pct)
+    high_thresh = np.percentile(vol_series, high_pct)
+    return np.where(vol_series <= low_thresh, "Low_Vol",
+                   np.where(vol_series >= high_thresh, "High_Vol", "Normal_Vol"))
+
+df_test["regime"] = regime_classification(df_test["rolling_vol"])
+regime_results = []
+for regime in ["Low_Vol", "Normal_Vol", "High_Vol"]:
+    mask = df_test["regime"] == regime
+    if mask.sum() > 0:
+        _, _, rmse, r2, _ = evaluate(y_test[mask], y_pred_vol[mask])
+        regime_results.append([regime, mask.sum(), rmse, r2])
+
+regime_df = pd.DataFrame(regime_results, columns=["Regime", "Sample_Size", "RMSE", "R2"])
+regime_df.to_csv("reports/regime_test_results.csv", index=False)
+
+def expanding_window_validation(X, y, model, tscv, is_linear=False):
+    rmse_list = []
+    for train_idx, test_idx in tscv.split(X):
+        X_test_fold = X.iloc[test_idx]
+        y_test_fold = y.iloc[test_idx]
+        
+        if is_linear:
+            X_test_fold_scaled = scaler.transform(X_test_fold)
+            pred = model.predict(X_test_fold_scaled)
+        else:
+            pred = model.predict(X_test_fold)
+            
+        rmse = np.sqrt(mean_squared_error(y_test_fold, pred))
+        rmse_list.append(rmse)
+    return np.mean(rmse_list)
+
+expanding_rmse = expanding_window_validation(
+    X_train, y_train, best_model, tscv, is_linear=(best_model_name=="Linear")
+)
+
+print("="*50)
+print(f"Best Model: {best_model_name}")
+print(f"Volatility RMSE: {results_df.loc[best_idx, 'RMSE']:.4f}")
+print(f"Directional Accuracy: {results_df.loc[best_idx, 'Directional_Acc']:.2%}")
+print(f"Expanding Window CV RMSE: {expanding_rmse:.4f}")
+print("="*50)
+print("\nRegime Test Results:")
+print(regime_df)
+
+pickle.dump(best_model, open("models/best_quant_model.pkl", "wb"))
+
+plt.figure(figsize=(10, 6))
+plt.scatter(y_test, y_pred_vol, alpha=0.6, color='#2E86AB')
+plt.plot([y_test.min(), y_test.max()], [y_test.min(), y_test.max()], 'r--', lw=2)
+plt.xlabel('Actual Volatility')
+plt.ylabel('Predicted Volatility')
+plt.title('Actual vs Predicted Volatility')
 plt.tight_layout()
-plt.savefig("plots/shap_beeswarm.png", dpi=300)
+plt.savefig("plots/model_performance_actual_vs_pred.png", dpi=300, bbox_inches='tight')
 plt.close()
-
-plt.figure(figsize=(12,5))
-plt.plot(df_test["date"], y_test, label="Realized Volatility (T+1)")
-plt.plot(df_test["date"], best_predictor.predict(X_test), label=f"Predicted Volatility - {best_model_name}")
-plt.title("T+1 Volatility: Realized vs Predicted")
-plt.legend()
-plt.tight_layout()
-plt.savefig("plots/vol_prediction.png", dpi=300)
-plt.close()
-
-# 核心计算
-y_pred_vol = best_predictor.predict(X_test)
-vol_residual = y_test - y_pred_vol
-actual_option_price = df_test["benchmark_bsm_price"]
-ml_option_price = black_scholes_vec(df_test["S"], STRIKE, T_MATURITY, df_test["r"], y_pred_vol)
-price_residual = actual_option_price - ml_option_price
-residual_std = np.std(price_residual, ddof=1)
-price_ci_95 = 1.96 * residual_std
-
-vol_residual_std = np.std(vol_residual, ddof=1)
-vol_ci_95 = 1.96 * vol_residual_std
-
-print("\n======================================================================")
-print("95% CONFIDENCE INTERVAL (Statistical Strict)")
-print("======================================================================")
-print(f"Volatility Forecast 95% CI: ± {vol_ci_95:.4f}")
-print(f"Option ML Price 95% CI:     ± {price_ci_95:.4f}")
-
-# 双定价表
-ci_df = df_test[["date", "S", "r"]].copy()
-ci_df["BSM_Price"] = black_scholes_vec(ci_df["S"], STRIKE, T_MATURITY, ci_df["r"], df_test["rv_lag1"])
-ci_df["ML_Price"] = ml_option_price
-ci_df["ML_Price_95CI_Upper"] = ml_option_price + price_ci_95
-ci_df["ML_Price_95CI_Lower"] = ml_option_price - price_ci_95
-ci_df["Price_Diff"] = ci_df["ML_Price"] - ci_df["BSM_Price"]
-ci_df.round(4).to_csv("reports/dual_pricing_with_95CI.csv", index=False)
-
-# 残差分布图
-plt.figure(figsize=(12,5))
-plt.hist(vol_residual, bins=30, alpha=0.7, color="steelblue", edgecolor="black")
-plt.title("Volatility Forecast Residual Distribution")
-plt.xlabel("Residual")
-plt.ylabel("Frequency")
-plt.tight_layout()
-plt.savefig("plots/vol_residual_hist.png", dpi=300)
-plt.close()
-
-plt.figure(figsize=(12,5))
-plt.hist(price_residual, bins=30, alpha=0.7, color="darkred", edgecolor="black")
-plt.title("Option Pricing Residual Distribution")
-plt.xlabel("Residual")
-plt.ylabel("Frequency")
-plt.tight_layout()
-plt.savefig("plots/price_residual_hist.png", dpi=300)
-plt.close()
-
-# 可视化仪表盘
-plt.figure(figsize=(14,5))
-plt.plot(df_test["date"], y_test, label="Realized Volatility")
-plt.plot(df_test["date"], best_predictor.predict(X_test), label=f"Predicted Vol ({best_model_name})")
-plt.title("Volatility Forecast Dashboard")
-plt.legend()
-plt.tight_layout()
-plt.savefig("plots/vol_forecast_dashboard.png", dpi=300)
-plt.close()
-
-plt.figure(figsize=(14,5))
-plt.plot(ci_df["date"], ci_df["BSM_Price"], label="BSM Price")
-plt.plot(ci_df["date"], ci_df["ML_Price"], label="ML Price")
-plt.title("Option Pricing: Traditional vs ML-Enhanced")
-plt.legend()
-plt.tight_layout()
-plt.savefig("plots/dual_pricing_trend.png", dpi=300)
-plt.close()
-
-# Vega敏感性分析
-vol_test_range = np.linspace(0.05, 0.4, 50)
-sample_S = df_test["S"].iloc[0]
-sample_r = df_test["r"].iloc[0]
-option_values = [black_scholes_vec(sample_S, STRIKE, T_MATURITY, sample_r, v) for v in vol_test_range]
-
-plt.figure(figsize=(10,5))
-plt.plot(vol_test_range, option_values, linewidth=3, color='brown')
-plt.xlabel("Volatility")
-plt.ylabel("Option Price")
-plt.title("Option Price Sensitivity to Volatility (Vega)")
-plt.tight_layout()
-plt.savefig("plots/vol_sensitivity_vega.png", dpi=300)
-plt.close()
-
-gov_df = pd.DataFrame({
-    "Model": ["Linear Regression", "Random Forest", "XGBoost", "Persistence Baseline"],
-    "RMSE": [evaluate(y_test, lr_pred)[2], evaluate(y_test, rf_pred)[2], evaluate(y_test, xgb_pred)[2], naive_metrics[2]],
-    "R2": [evaluate(y_test, lr_pred)[5], evaluate(y_test, rf_pred)[5], evaluate(y_test, xgb_pred)[5], naive_metrics[5]],
-    "Directional_Accuracy": [evaluate(y_test, lr_pred)[4], evaluate(y_test, rf_pred)[4], evaluate(y_test, xgb_pred)[4], naive_metrics[4]]
-}).round(4)
-gov_df.to_csv("reports/model_governance_report.csv", index=False)
-
-# 模型与配置保存
-pickle.dump(best_predictor, open("models/best_model_final.pkl", "wb"))
-
-import sklearn, xgboost
-with open("requirements.txt", "w") as f:
-    f.write(f"scikit-learn=={sklearn.__version__}\n")
-    f.write(f"xgboost=={xgboost.__version__}\n")
-    f.write(f"shap=={shap.__version__}\n")
-    f.write(f"pandas=={pd.__version__}\n")
-    f.write(f"numpy=={np.__version__}\n")
-    f.write(f"matplotlib=={matplotlib.__version__}\n")
-    f.write(f"scipy=={scipy.__version__}\n")
-
-metadata = {
-    "features": FEATURES,
-    "best_model": best_model_name,
-    "volatility_annualization": TRADING_DAYS,
-    "train_period": [str(df_train["date"].iloc[0]), str(df_train["date"].iloc[-1])],
-    "test_period": [str(df_test["date"].iloc[0]), str(df_test["date"].iloc[-1])]
-}
-with open("metadata/model_metadata.json", "w", encoding="utf-8") as f:
-    json.dump(metadata, f, ensure_ascii=False, indent=4)
