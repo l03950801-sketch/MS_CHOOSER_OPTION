@@ -402,6 +402,41 @@ model_names_shap = ["LR_Ridge", "RandomForest", "XGBoost"]
 is_linear_list = [True, False, False]
 regimes = ["Low_Vol", "High_Vol"]
 
+# ===================== 线性回归标准化回归系数 =====================
+def plot_standardized_coefficients(model, features):
+    # 特征已标准化，模型系数 = 标准化回归系数
+    coef = model.coef_
+    coef_df = pd.DataFrame({
+        "Feature": features,
+        "Standardized_Coefficient": coef
+    })
+    # 按系数绝对值排序，方便查看重要性
+    coef_df["Abs_Coeff"] = coef_df["Standardized_Coefficient"].abs()
+    coef_df = coef_df.sort_values("Abs_Coeff", ascending=False).reset_index(drop=True)
+    
+    # 保存系数表格
+    coef_df.to_csv("reports/standardized_coefficients.csv", index=False)
+    # 控制台打印
+    print("\n" + "="*65)
+    print("Linear Regression (Ridge) 标准化回归系数")
+    print("="*65)
+    print(coef_df[["Feature", "Standardized_Coefficient"]].round(4))
+    
+    # 绘制系数条形图
+    plt.figure(figsize=(10, 6))
+    sns.barplot(x="Standardized_Coefficient", y="Feature", data=coef_df, palette="coolwarm")
+    plt.title("Ridge Model - Standardized Regression Coefficients", fontsize=14)
+    plt.xlabel("Standardized Coefficient (Feature Impact Size)")
+    plt.ylabel("Input Feature")
+    plt.grid(alpha=0.3, axis='x')
+    plt.tight_layout()
+    plt.savefig("plots/standardized_coefficients.png", dpi=300)
+    plt.close()
+    return coef_df
+
+# 执行计算（仅线性回归需要）
+standardized_coef_df = plot_standardized_coefficients(lr_model, FEATURES)
+
 def run_regime_shap(model, model_name, is_linear, X_test, df_test, scaler):
     for regime in regimes:
         mask = df_test["regime"] == regime
@@ -602,13 +637,13 @@ def plot_final_uncertainty_sensitivity():
             # 存储结果
             res["sent_lag1"][name] = {"vol": vol_arr}
 
-            # 绘图（修复：确保线不被NaN打断）
+            # 绘图
             axes[0,0].plot(sent_lag1_x, vol_arr, color=info["color"], linewidth=2.5, label=name)
             axes[0,0].fill_between(sent_lag1_x, vol_lb, vol_ub, color=info["color"], alpha=0.15)
             axes[1,0].plot(sent_lag1_x, price_mean, color=info["color"], linewidth=2.5)
             axes[1,0].fill_between(sent_lag1_x, price_lb, price_ub, color=info["color"], alpha=0.15)
             
-            # 弹性计算（修复：过滤NaN，避免全NaN线）
+            # 弹性计算
             dvol = np.gradient(vol_arr, sent_lag1_x)
             with np.errstate(divide='ignore', invalid='ignore'):
                 mask = (np.abs(vol_arr) > 1e-6) & (np.abs(sent_lag1_x - lag1_mu) / lag1_std > X_THRESHOLD)

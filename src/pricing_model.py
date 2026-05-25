@@ -2,6 +2,10 @@ import pandas as pd
 import numpy as np
 from scipy.stats import norm
 from pathlib import Path
+from sklearn.linear_model import LinearRegression
+from sklearn.preprocessing import StandardScaler
+import warnings
+warnings.filterwarnings("ignore")
 
 # Configuration
 PROCESSED_DATA_PATH = Path("data/processed_data.csv")
@@ -63,6 +67,29 @@ def calculate_metrics(actual: np.ndarray, predicted: np.ndarray) -> dict:
     mae = np.mean(np.abs(actual - predicted))
     rmse = np.sqrt(np.mean((actual - predicted) ** 2))
     return {"MAE": float(round(mae, 4)), "RMSE": float(round(rmse, 4))}
+
+def compute_standardized_coefficients(df: pd.DataFrame) -> pd.DataFrame:
+    # 1. 定义特征 + 目标变量
+    features = ["sentiment", "r", "S", "vol"]
+    X = df[features].copy()
+    y = df["rolling_vol"].copy()
+
+    # 2. 特征标准化
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+
+    # 3. 训练线性回归
+    lr = LinearRegression()
+    lr.fit(X_scaled, y)
+
+    # 4. 生成结果表
+    coef_df = pd.DataFrame({
+        "Feature": features,
+        "Standardized_Coefficient": np.round(lr.coef_, 4),
+        "Abs_Importance": np.round(np.abs(lr.coef_), 4)
+    }).sort_values(by="Abs_Importance", ascending=False)
+
+    return coef_df
 
 # Output
 def run_comparison_analysis(df: pd.DataFrame) -> None:
@@ -151,3 +178,11 @@ if __name__ == "__main__":
     ])
 
     run_week4_limitation_validation(df, benchmark, pred_vix, pred_sentiment)
+
+    print("\n" + "="*60)
+    print("LINEAR REGRESSION | STANDARDIZED COEFFICIENTS (FEATURE IMPORTANCE)")
+    print("="*60)
+    coef_result = compute_standardized_coefficients(df)
+    print(coef_result)
+    coef_result.to_csv("results/standardized_coefficients.csv", index=False)
+    print("\n 标准化回归系数已保存至 results/standardized_coefficients.csv")
