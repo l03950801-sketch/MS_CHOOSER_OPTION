@@ -1,0 +1,5 @@
+Model,Pricing_RMSE,Pricing_R2,Pricing_Directional_Acc,Expanding_Window_CV_RMSE
+Linear Regression (Ridge L2),0.1822,0.9952,0.9828,0.0158
+Random Forest,0.2003,0.9942,0.9828,0.0076
+XGBoost,0.2208,0.993,0.9828,0.0013
+BSM Baseline (Lagged Vol),0.0924,0.9988,0.9828,N/A
