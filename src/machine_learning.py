@@ -478,18 +478,26 @@ def run_full_interaction_shap(model, model_name, is_linear, X_test, scaler):
     else:
         explainer = shap.TreeExplainer(model)
         sv = explainer.shap_values(X_test)
+        if len(sv.shape) == 1:
+            sv = sv.reshape(-1, 1)
 
     feature_pairs = list(itertools.combinations(FEATURES, 2))
     for feat1, feat2 in feature_pairs:
         try:
-            plt.figure()
-            shap.dependence_plot(feat1, sv, X_test, interaction_index=feat2, show=False)
-            plt.title(f"{model_name} | {feat1} × {feat2} (Volatility)")
+            plt.figure(figsize=(8, 5))
+            shap.dependence_plot(
+                feat1, sv, X_test,
+                interaction_index=feat2,
+                show=False,
+                alpha=0.6
+            )
+            plt.title(f"{model_name} | {feat1} × {feat2} Feature Interaction", fontsize=12)
             plt.tight_layout()
-            plt.savefig(f"plots/shap_interact_{model_name}_{feat1}_{feat2}.png", bbox_inches='tight')
+            plt.savefig(f"plots/shap_interact_{model_name}_{feat1}_{feat2}.png", dpi=300, bbox_inches='tight')
             plt.close()
-        except:
-            continue
+        except Exception as e:
+            print(f"[{model_name}] 生成 {feat1}-{feat2} 交互图失败: {str(e)}")
+            plt.close()
 
 for model, name, linear in zip(model_list, model_names_shap, is_linear_list):
     run_full_interaction_shap(model, name, linear, X_test, scaler)
