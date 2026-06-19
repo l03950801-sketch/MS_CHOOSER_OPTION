@@ -1,9 +1,9 @@
 Regime,Model,N,RMSE,R2
 Low_Vol,BSM,44,0.1409,0.9952
-Low_Vol,Heston,44,0.5725,0.9214
+Low_Vol,Heston,44,13.0248,-39.6695
 Low_Vol,SABR,44,0.1414,0.9952
-Low_Vol,Ensemble,44,0.1418,0.9952
+Low_Vol,Ensemble,44,0.2133,0.9891
 High_Vol,BSM,15,0.3154,0.9743
-High_Vol,Heston,15,1.2562,0.5917
+High_Vol,Heston,15,8.0529,-15.7799
 High_Vol,SABR,15,0.3146,0.9744
-High_Vol,Ensemble,15,0.3879,0.9611
+High_Vol,Ensemble,15,0.2623,0.9822

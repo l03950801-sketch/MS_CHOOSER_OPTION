@@ -1,8 +1,8 @@
 Model,Parameter,Calibrated_Value,Constraint
-Heston,kappa,4.0,
-Heston,theta,0.04,
-Heston,xi,0.5,Feller: 2κθ>ξ²
-Heston,rho,-0.9,
+Heston,kappa,0.5,
+Heston,theta,0.06,
+Heston,xi,0.2,Feller: 2κθ>ξ²
+Heston,rho,-0.3,
 SABR,beta,1.0,
 SABR,rho,0.0,
 SABR,nu,0.2,
